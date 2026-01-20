@@ -24,7 +24,8 @@ class TenderRepository:
 
     async def upsert_by_bid_id(self, bid_id: str, data: Dict[str, Any]) -> str:
         now = datetime.now(timezone.utc)
-        data.setdefault("created_at", now)
+        data = dict(data)
+        data.pop("created_at", None)
         data["updated_at"] = now
         result = await self.collection.update_one(
             {"bid_id": bid_id},
