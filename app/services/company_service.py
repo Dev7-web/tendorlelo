@@ -119,6 +119,47 @@ class CompanyService:
         profile = await self.repo.get_by_id(company_id)
         return self._serialize(profile) if profile else None
 
+    async def list_companies(
+        self,
+        skip: int = 0,
+        limit: int = 50,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        filters: Dict[str, Any] = {}
+        if status:
+            filters["status.processing_status"] = status
+        if search:
+            regex = {"$regex": search, "$options": "i"}
+            filters["$or"] = [
+                {"name": regex},
+                {"metadata.company_name": regex},
+                {"metadata.domains": regex},
+            ]
+
+        total = await self.repo.collection.count_documents(filters)
+        cursor = self.repo.collection.find(filters).sort("created_at", -1).skip(skip).limit(limit)
+        items = []
+        async for profile in cursor:
+            items.append(self._serialize(profile))
+        return {"items": items, "total": total, "skip": skip, "limit": limit}
+
+    async def get_search_history(self, company_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        cursor = (
+            self.repo.collection.database.get_collection("search_history")
+            .find({"company_id": company_id})
+            .sort("searched_at", -1)
+            .limit(limit)
+        )
+        items = []
+        async for entry in cursor:
+            entry_id = entry.get("_id")
+            if entry_id is not None:
+                entry["id"] = str(entry_id)
+                entry["_id"] = str(entry_id)
+            items.append(entry)
+        return items
+
     async def delete_profile(self, company_id: str) -> bool:
         profile = await self.repo.get_by_id(company_id)
         if not profile:

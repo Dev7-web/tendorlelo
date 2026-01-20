@@ -26,6 +26,7 @@ async def run_scrape_job() -> None:
 
     log_entry = {
         "job_id": job_id,
+        "job_type": "scrape",
         "started_at": datetime.now(timezone.utc),
         "status": "running",
         "stats": {
@@ -39,6 +40,7 @@ async def run_scrape_job() -> None:
         "errors": [],
     }
     await scrape_logs.insert_one(log_entry)
+    await _broadcast("job_started", {"job_id": job_id, "job_type": "scrape"})
 
     stats = log_entry["stats"]
     errors: List[Dict[str, Any]] = []
@@ -76,6 +78,10 @@ async def run_scrape_job() -> None:
                 }
             },
         )
+        await _broadcast(
+            "job_completed",
+            {"job_id": job_id, "job_type": "scrape", "status": "completed", "stats": stats},
+        )
     except Exception as exc:
         await scrape_logs.update_one(
             {"job_id": job_id},
@@ -88,6 +94,10 @@ async def run_scrape_job() -> None:
                 }
             },
         )
+        await _broadcast(
+            "job_failed",
+            {"job_id": job_id, "job_type": "scrape", "status": "failed", "error": str(exc)},
+        )
         logger.info("scrape.job_failed", error=str(exc))
 
 
@@ -98,9 +108,65 @@ def run_scrape_job_sync() -> None:
 async def run_process_job() -> None:
     db = get_database()
     service = TenderService(db)
-    processed = await service.process_pending_tenders()
-    logger.info("process.job_completed", processed=processed)
+    job_id = str(uuid.uuid4())
+    scrape_logs = db.get_collection("scrape_logs")
+    log_entry = {
+        "job_id": job_id,
+        "job_type": "process",
+        "started_at": datetime.now(timezone.utc),
+        "status": "running",
+        "stats": {"processed": 0, "errors": 0},
+        "errors": [],
+    }
+    await scrape_logs.insert_one(log_entry)
+    await _broadcast("job_started", {"job_id": job_id, "job_type": "process"})
+
+    try:
+        processed = await service.process_pending_tenders()
+        stats = {"processed": processed, "errors": 0}
+        await scrape_logs.update_one(
+            {"job_id": job_id},
+            {
+                "$set": {
+                    "completed_at": datetime.now(timezone.utc),
+                    "status": "completed",
+                    "stats": stats,
+                    "errors": [],
+                }
+            },
+        )
+        await _broadcast(
+            "job_completed",
+            {"job_id": job_id, "job_type": "process", "status": "completed", "stats": stats},
+        )
+        logger.info("process.job_completed", processed=processed)
+    except Exception as exc:
+        await scrape_logs.update_one(
+            {"job_id": job_id},
+            {
+                "$set": {
+                    "completed_at": datetime.now(timezone.utc),
+                    "status": "failed",
+                    "stats": {"processed": 0, "errors": 1},
+                    "errors": [{"error": str(exc), "timestamp": datetime.now(timezone.utc)}],
+                }
+            },
+        )
+        await _broadcast(
+            "job_failed",
+            {"job_id": job_id, "job_type": "process", "status": "failed", "error": str(exc)},
+        )
+        logger.info("process.job_failed", error=str(exc))
 
 
 def run_process_job_sync() -> None:
     asyncio.run(run_process_job())
+
+
+async def _broadcast(event: str, payload: Dict[str, Any]) -> None:
+    try:
+        from app.services.socket_manager import manager
+
+        await manager.broadcast({"event": event, "data": payload})
+    except Exception:
+        return

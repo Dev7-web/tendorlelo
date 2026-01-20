@@ -80,6 +80,38 @@ class SearchService:
             "filters_applied": filters,
         }
 
+    async def match_companies_for_tender(self, tender_id: str, limit: int = 5) -> Dict[str, Any]:
+        tender = await self.tender_repo.get_by_id(tender_id)
+        if not tender:
+            raise ValueError("Tender not found")
+
+        tender_embedding = tender.get("summary_embedding") or []
+        companies = await self.company_repo.list(skip=0, limit=500)
+
+        scored: List[Tuple[Dict[str, Any], float, List[str]]] = []
+        for company in companies:
+            company_embedding = company.get("summary_embedding") or []
+            vector_score = self._cosine_similarity(tender_embedding, company_embedding)
+            metadata_score, reasons = self._metadata_score(tender, company)
+            final_score = 0.7 * vector_score + 0.3 * metadata_score
+            scored.append((company, final_score, reasons))
+
+        scored.sort(key=lambda item: item[1], reverse=True)
+        top = scored[:limit]
+
+        results = []
+        for company, score, reasons in top:
+            results.append(
+                {
+                    "company_id": company.get("company_id"),
+                    "name": company.get("name") or (company.get("metadata") or {}).get("company_name"),
+                    "score": round(score, 4),
+                    "match_reasons": reasons,
+                }
+            )
+
+        return {"tender_id": tender_id, "results": results, "total": len(results)}
+
     def _get_query_embedding(self, profile: Dict[str, Any], query: Optional[str]) -> List[float]:
         if query:
             return self.embedder.embed(query)

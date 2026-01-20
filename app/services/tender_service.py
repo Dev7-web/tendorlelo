@@ -109,9 +109,33 @@ class TenderService:
             logger.info("tender.process_failed", bid_id=bid_id, error=str(exc))
             return False
 
-    async def list_tenders(self, skip: int = 0, limit: int = 50) -> List[Dict[str, Any]]:
-        tenders = await self.repo.list(skip=skip, limit=limit)
-        return [self._serialize(tender) for tender in tenders]
+    async def list_tenders(
+        self,
+        skip: int = 0,
+        limit: int = 50,
+        status: Optional[str] = None,
+        domains: Optional[List[str]] = None,
+        search: Optional[str] = None,
+        expired: Optional[bool] = None,
+        sort_by: str = "created_at",
+        sort_dir: str = "desc",
+    ) -> Dict[str, Any]:
+        await self._update_expired_flags()
+        filters = self._build_filters(status=status, domains=domains, search=search, expired=expired)
+        sort_field = self._sort_field(sort_by)
+        sort_order = -1 if sort_dir.lower() == "desc" else 1
+
+        total = await self.repo.collection.count_documents(filters)
+        cursor = (
+            self.repo.collection.find(filters)
+            .sort(sort_field, sort_order)
+            .skip(skip)
+            .limit(limit)
+        )
+        items = []
+        async for tender in cursor:
+            items.append(self._serialize(tender))
+        return {"items": items, "total": total, "skip": skip, "limit": limit}
 
     async def get_tender(self, tender_id: str) -> Optional[Dict[str, Any]]:
         tender = await self.repo.get_by_id(tender_id)
@@ -122,7 +146,8 @@ class TenderService:
         total = await collection.count_documents({})
         processed = await collection.count_documents({"status.llm_processed": True})
         pending = await collection.count_documents({"status.llm_processed": False})
-        return {"total": total, "processed": processed, "pending": pending}
+        failed = await collection.count_documents({"status.last_error": {"$ne": None}})
+        return {"total": total, "processed": processed, "pending": pending, "failed": failed}
 
     def _serialize(self, tender: Dict[str, Any]) -> Dict[str, Any]:
         if not tender:
@@ -141,3 +166,76 @@ class TenderService:
             if bid_id and await self.process_tender(bid_id):
                 processed += 1
         return processed
+
+    async def reprocess_tender(self, tender_id: str) -> bool:
+        tender = await self.repo.get_by_id(tender_id)
+        if not tender:
+            return False
+        status = tender.get("status", {})
+        status.update({"llm_processed": False, "embedding_generated": False, "last_error": None})
+        await self.repo.update(tender_id, {"status": status})
+        return await self.process_tender(tender.get("bid_id"))
+
+    async def _update_expired_flags(self) -> None:
+        now = datetime.now(timezone.utc)
+        await self.repo.collection.update_many(
+            {"scraped_info.end_date": {"$lt": now}},
+            {"$set": {"expired": True}},
+        )
+
+    def _build_filters(
+        self,
+        status: Optional[str],
+        domains: Optional[List[str]],
+        search: Optional[str],
+        expired: Optional[bool],
+    ) -> Dict[str, Any]:
+        filters: Dict[str, Any] = {}
+        and_filters: List[Dict[str, Any]] = []
+
+        if status == "processed":
+            filters["status.llm_processed"] = True
+        elif status == "pending":
+            filters["status.llm_processed"] = False
+        elif status == "failed":
+            and_filters.append(
+                {
+                    "$or": [
+                        {"status.last_error": {"$ne": None}},
+                        {"status.scrape_status": "failed"},
+                    ]
+                }
+            )
+
+        if domains:
+            filters["metadata.domains"] = {"$in": domains}
+
+        if search:
+            regex = {"$regex": search, "$options": "i"}
+            and_filters.append(
+                {
+                    "$or": [
+                        {"bid_id": regex},
+                        {"metadata.title": regex},
+                        {"scraped_info.items": regex},
+                        {"scraped_info.department": regex},
+                        {"metadata.department": regex},
+                    ]
+                }
+            )
+
+        if expired is not None:
+            filters["expired"] = expired
+
+        if and_filters:
+            filters["$and"] = and_filters
+        return filters
+
+    def _sort_field(self, sort_by: str) -> str:
+        mapping = {
+            "created_at": "created_at",
+            "updated_at": "updated_at",
+            "scraped_at": "scraped_at",
+            "end_date": "scraped_info.end_date",
+        }
+        return mapping.get(sort_by, "created_at")

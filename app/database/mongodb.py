@@ -60,8 +60,10 @@ async def create_indexes(db: Optional[AsyncIOMotorDatabase] = None) -> None:
     await database.get_collection("search_history").create_index(
         [("company_id", ASCENDING), ("searched_at", DESCENDING)]
     )
-    await database.get_collection("scrape_logs").create_index(
-        [("job_id", ASCENDING)], unique=True
-    )
+    scrape_logs = database.get_collection("scrape_logs")
+    await scrape_logs.create_index([("job_id", ASCENDING)], unique=True)
+    await scrape_logs.create_index([("started_at", DESCENDING)])
+    await scrape_logs.create_index([("status", ASCENDING)])
+    await scrape_logs.create_index([("job_type", ASCENDING)])
 
     logger.info("mongodb.indexes.created")

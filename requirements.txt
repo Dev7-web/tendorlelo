@@ -30,6 +30,7 @@ python-dotenv
 httpx
 tenacity
 aiofiles
+python-dateutil
 
 # Scheduling
 apscheduler

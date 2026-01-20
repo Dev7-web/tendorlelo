@@ -15,6 +15,18 @@ from app.services.company_service import CompanyService
 router = APIRouter(prefix="/companies", tags=["companies"])
 
 
+@router.get("/", response_model=Dict[str, Any])
+async def list_companies(
+    skip: int = 0,
+    limit: int = 50,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    service = CompanyService(db)
+    return await service.list_companies(skip=skip, limit=limit, status=status, search=search)
+
+
 @router.post("/upload", response_model=Dict[str, Any])
 async def upload_company_profile(
     files: List[UploadFile] = File(...),
@@ -26,6 +38,13 @@ async def upload_company_profile(
         return await service.create_profile(files=files, company_name=company_name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/{company_id}/search-history", response_model=List[Dict[str, Any]])
+async def get_company_search_history(company_id: str, limit: int = 20, db: AsyncIOMotorDatabase = Depends(get_db)):
+    service = CompanyService(db)
+    history = await service.get_search_history(company_id=company_id, limit=limit)
+    return history
 
 
 @router.get("/{company_id}", response_model=Dict[str, Any])

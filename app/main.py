@@ -4,11 +4,13 @@ FastAPI application entry point.
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 from app.api.routes import companies, search, tenders
+from app.api.routes import dashboard, jobs, websocket
 from app.config import settings
 from app.database.mongodb import create_indexes, close_client
 from app.jobs.scheduler import shutdown_scheduler, start_scheduler
@@ -29,11 +31,41 @@ app.add_middleware(
 app.include_router(tenders.router, prefix="/api/v1")
 app.include_router(companies.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
+app.include_router(dashboard.router, prefix="/api/v1")
+app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(websocket.router)
 
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError):
-    return JSONResponse(status_code=400, content={"detail": str(exc)})
+    payload = {"detail": str(exc), "code": exc.code}
+    if getattr(exc, "field", None):
+        payload["field"] = exc.field
+    return JSONResponse(status_code=400, content=payload)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    code = "PROCESSING_ERROR"
+    if exc.status_code == 404:
+        code = "NOT_FOUND"
+    elif exc.status_code in (400, 422):
+        code = "VALIDATION_ERROR"
+    elif exc.status_code == 429:
+        code = "RATE_LIMITED"
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, "code": code})
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    field = None
+    if exc.errors():
+        loc = exc.errors()[0].get("loc", [])
+        field = ".".join(str(item) for item in loc[1:]) if loc else None
+    payload = {"detail": "Invalid request", "code": "VALIDATION_ERROR"}
+    if field:
+        payload["field"] = field
+    return JSONResponse(status_code=422, content=payload)
 
 
 @app.on_event("startup")
