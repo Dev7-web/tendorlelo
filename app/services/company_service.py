@@ -111,9 +111,8 @@ class CompanyService:
             "updated_at": datetime.now(timezone.utc),
         }
 
-        profile_id = await self.repo.create(profile)
-        profile["id"] = profile_id
-        return profile
+        await self.repo.create(profile)
+        return self._serialize(profile)
 
     async def get_profile(self, company_id: str) -> Optional[Dict[str, Any]]:
         profile = await self.repo.get_by_id(company_id)
