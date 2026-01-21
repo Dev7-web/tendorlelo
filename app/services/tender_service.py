@@ -11,7 +11,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.database.repositories.tender_repo import TenderRepository
 from app.processors.embedder import TextEmbedder
-from app.processors.llm_extractor import GeminiExtractor
+from app.processors.llm_extractor import LLMExtractor
 from app.processors.pdf_extractor import PDFExtractor
 from app.scraper.pdf_downloader import download_with_retry
 from app.utils.logger import get_logger
@@ -24,11 +24,11 @@ class TenderService:
         self.repo = TenderRepository(db)
         self.pdf_extractor = PDFExtractor()
         self.embedder = TextEmbedder()
-        self._llm: Optional[GeminiExtractor] = None
+        self._llm: Optional[LLMExtractor] = None
 
-    def _get_llm(self) -> GeminiExtractor:
+    def _get_llm(self) -> LLMExtractor:
         if self._llm is None:
-            self._llm = GeminiExtractor()
+            self._llm = LLMExtractor()
         return self._llm
 
     async def create_or_update_from_scrape(self, bid: Dict[str, Any]) -> str:

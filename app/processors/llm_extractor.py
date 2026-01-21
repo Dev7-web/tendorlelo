@@ -1,14 +1,14 @@
 """
-LLM-based metadata extraction using Gemini.
+LLM-based metadata extraction using a configurable provider.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-import google.generativeai as genai
+import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import settings
@@ -62,24 +62,51 @@ Text:
 """
 
 
-class GeminiExtractor:
+class LLMExtractor:
     def __init__(self) -> None:
-        if not settings.GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY is not configured")
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        self.model = genai.GenerativeModel(settings.GEMINI_MODEL)
+        self.provider = settings.LLM_PROVIDER.lower()
+        self._model = None
+        self._client: Optional[httpx.Client] = None
+
+        if self.provider == "gemini":
+            if not settings.GEMINI_API_KEY:
+                raise ValueError("GEMINI_API_KEY is not configured")
+            import google.generativeai as genai
+
+            genai.configure(api_key=settings.GEMINI_API_KEY)
+            self._model = genai.GenerativeModel(settings.GEMINI_MODEL)
+        elif self.provider in {"ollama", "local"}:
+            self._client = httpx.Client(timeout=settings.LLM_TIMEOUT_SECONDS)
+        else:
+            raise ValueError(f"Unsupported LLM_PROVIDER: {settings.LLM_PROVIDER}")
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=8))
     def extract_tender(self, text: str) -> Dict[str, Any]:
-        prompt = TENDER_PROMPT.format(content=text[:12000])
-        response = self.model.generate_content(prompt)
-        return self._parse_json(response.text)
+        prompt = TENDER_PROMPT.format(content=text[: settings.LLM_INPUT_MAX_CHARS])
+        response_text = self._generate(prompt)
+        return self._parse_json(response_text)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=8))
     def extract_company(self, text: str) -> Dict[str, Any]:
-        prompt = COMPANY_PROMPT.format(content=text[:12000])
-        response = self.model.generate_content(prompt)
-        return self._parse_json(response.text)
+        prompt = COMPANY_PROMPT.format(content=text[: settings.LLM_INPUT_MAX_CHARS])
+        response_text = self._generate(prompt)
+        return self._parse_json(response_text)
+
+    def _generate(self, prompt: str) -> str:
+        if self.provider == "gemini":
+            response = self._model.generate_content(prompt)
+            return response.text
+
+        payload = {"model": settings.LLM_MODEL, "prompt": prompt, "stream": False}
+        url = settings.LLM_BASE_URL.rstrip("/") + "/api/generate"
+        headers = {"Content-Type": "text/plain"}
+        response = self._client.post(url, content=json.dumps(payload), headers=headers)
+        response.raise_for_status()
+        try:
+            data = response.json()
+            return data.get("response") or data.get("text") or response.text
+        except json.JSONDecodeError:
+            return response.text
 
     def _parse_json(self, text: str) -> Dict[str, Any]:
         try:
@@ -87,10 +114,10 @@ class GeminiExtractor:
         except json.JSONDecodeError:
             match = re.search(r"\{.*\}", text, flags=re.DOTALL)
             if not match:
-                logger.info("gemini.json_parse_failed", raw=text[:300])
+                logger.info("llm.json_parse_failed", raw=text[:300])
                 return {}
             try:
                 return json.loads(match.group(0))
             except json.JSONDecodeError:
-                logger.info("gemini.json_parse_failed", raw=text[:300])
+                logger.info("llm.json_parse_failed", raw=text[:300])
                 return {}

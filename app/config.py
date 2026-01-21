@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     SCRAPER_HEADLESS: bool = True
 
     # LLM
+    LLM_PROVIDER: str = "ollama"
+    LLM_BASE_URL: str = "http://124.123.18.150:11434"
+    LLM_MODEL: str = "gpt-oss:latest"
+    LLM_TIMEOUT_SECONDS: int = 60
+    LLM_INPUT_MAX_CHARS: int = 12000
     GEMINI_MODEL: str = "gemini-1.5-flash"
 
     # Embedding
