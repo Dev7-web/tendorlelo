@@ -13,6 +13,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.database.repositories.company_repo import CompanyRepository
 from app.database.repositories.tender_repo import TenderRepository
 from app.processors.embedder import TextEmbedder
+from app.services.matching_utils import calculate_enhanced_match_score, semantic_overlap_score
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -51,8 +52,13 @@ class SearchService:
         for tender in candidates:
             tender_embedding = tender.get("summary_embedding") or []
             vector_score = self._cosine_similarity(query_embedding, tender_embedding)
-            metadata_score, reasons = self._metadata_score(tender, profile)
-            final_score = 0.7 * vector_score + 0.3 * metadata_score
+
+            # Use enhanced matching algorithm
+            tender_meta = tender.get("metadata") or {}
+            profile_meta = profile.get("metadata") or {}
+            final_score, reasons = calculate_enhanced_match_score(
+                tender_meta, profile_meta, vector_score
+            )
             scored.append((tender, final_score, reasons))
 
         scored.sort(key=lambda item: (-item[1], self._end_date_sort(item[0])))
@@ -92,8 +98,13 @@ class SearchService:
         for company in companies:
             company_embedding = company.get("summary_embedding") or []
             vector_score = self._cosine_similarity(tender_embedding, company_embedding)
-            metadata_score, reasons = self._metadata_score(tender, company)
-            final_score = 0.7 * vector_score + 0.3 * metadata_score
+
+            # Use enhanced matching algorithm
+            tender_meta = tender.get("metadata") or {}
+            company_meta = company.get("metadata") or {}
+            final_score, reasons = calculate_enhanced_match_score(
+                tender_meta, company_meta, vector_score
+            )
             scored.append((company, final_score, reasons))
 
         scored.sort(key=lambda item: item[1], reverse=True)
