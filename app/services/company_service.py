@@ -15,9 +15,9 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.config import settings
 from app.database.repositories.company_repo import CompanyRepository
+from app.processors.document_extractor import DocumentExtractor, is_supported_file, get_supported_extensions
 from app.processors.embedder import TextEmbedder
 from app.processors.llm_extractor import LLMExtractor
-from app.processors.pdf_extractor import PDFExtractor
 from app.utils.helpers import ensure_dir, safe_filename, sha256_file
 from app.utils.logger import get_logger
 
@@ -27,7 +27,7 @@ logger = get_logger(__name__)
 class CompanyService:
     def __init__(self, db: AsyncIOMotorDatabase) -> None:
         self.repo = CompanyRepository(db)
-        self.pdf_extractor = PDFExtractor()
+        self.document_extractor = DocumentExtractor()
         self.embedder = TextEmbedder()
         self._llm: Optional[LLMExtractor] = None
 
@@ -49,10 +49,13 @@ class CompanyService:
         total_files = len(files)
 
         for index, file in enumerate(files, start=1):
-            if not file.filename or (not file.filename.lower().endswith(".pdf")):
-                raise ValueError("Only PDF files are supported")
+            if not file.filename or not is_supported_file(file.filename):
+                supported = ", ".join(get_supported_extensions())
+                raise ValueError(f"Unsupported file format. Supported formats: {supported}")
 
-            safe_name = safe_filename(file.filename, default=f"profile_{index}.pdf")
+            # Get the original extension for the default filename
+            ext = os.path.splitext(file.filename.lower())[1] or ".pdf"
+            safe_name = safe_filename(file.filename, default=f"profile_{index}{ext}")
             local_path = os.path.join(company_dir, safe_name)
 
             size = 0
@@ -76,7 +79,7 @@ class CompanyService:
                 }
             )
 
-            extracted = self.pdf_extractor.extract_text(local_path)
+            extracted = self.document_extractor.extract_text(local_path)
             if extracted:
                 texts.append(extracted)
 
