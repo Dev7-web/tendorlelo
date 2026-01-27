@@ -21,15 +21,16 @@ def start_scheduler() -> None:
     if scheduler.running:
         return
 
+    # Use async functions directly - APScheduler handles them properly
     scheduler.add_job(
-        lambda: asyncio.create_task(run_scrape_job()),
+        run_scrape_job,
         "interval",
         hours=settings.SCRAPE_INTERVAL_HOURS,
         id="scrape_job",
         replace_existing=True,
     )
     scheduler.add_job(
-        lambda: asyncio.create_task(run_process_job()),
+        run_process_job,
         "interval",
         minutes=settings.PROCESS_INTERVAL_MINUTES,
         id="process_job",

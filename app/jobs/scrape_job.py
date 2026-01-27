@@ -122,7 +122,7 @@ async def run_process_job() -> None:
     await _broadcast("job_started", {"job_id": job_id, "job_type": "process"})
 
     try:
-        processed = await service.process_pending_tenders()
+        processed = await service.process_pending_tenders(limit=settings.PROCESS_BATCH_LIMIT)
         stats = {"processed": processed, "errors": 0}
         await scrape_logs.update_one(
             {"job_id": job_id},

@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     ENABLE_SCHEDULER: bool = True
     SCRAPE_INTERVAL_HOURS: int = 6
     PROCESS_INTERVAL_MINUTES: int = 30
+    PROCESS_BATCH_LIMIT: int = 50
 
     class Config:
         env_file = ".env"
