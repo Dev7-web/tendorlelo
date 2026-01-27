@@ -1,12 +1,13 @@
 """
 LLM-based metadata extraction using a configurable provider.
+Supports full document processing with intelligent chunking for large documents.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -62,6 +63,20 @@ Text:
 """
 
 
+CHUNK_MERGE_PROMPT = """
+You are merging metadata extracted from multiple parts of a document.
+Combine the following metadata objects into a single comprehensive object.
+For arrays: combine and deduplicate items.
+For strings: pick the most detailed/complete value.
+For numbers: pick the most specific value.
+For booleans: if any is true, result is true.
+Return ONLY valid JSON.
+
+Metadata objects to merge:
+{metadata_list}
+"""
+
+
 class LLMExtractor:
     def __init__(self) -> None:
         self.provider = settings.LLM_PROVIDER.lower()
@@ -80,17 +95,149 @@ class LLMExtractor:
         else:
             raise ValueError(f"Unsupported LLM_PROVIDER: {settings.LLM_PROVIDER}")
 
+    def _get_max_chars(self) -> int:
+        """Get maximum characters based on provider."""
+        if self.provider == "gemini":
+            return settings.LLM_GEMINI_MAX_CHARS
+        return settings.LLM_INPUT_MAX_CHARS
+
+    def _split_into_chunks(self, text: str) -> List[str]:
+        """Split text into overlapping chunks for processing."""
+        max_chars = self._get_max_chars()
+
+        # If text fits within limit, return as single chunk
+        if len(text) <= max_chars:
+            return [text]
+
+        chunk_size = settings.LLM_CHUNK_SIZE
+        overlap = settings.LLM_CHUNK_OVERLAP
+        chunks = []
+        start = 0
+
+        while start < len(text):
+            end = start + chunk_size
+
+            # Try to break at a sentence or paragraph boundary
+            if end < len(text):
+                # Look for paragraph break
+                para_break = text.rfind('\n\n', start + chunk_size - overlap, end)
+                if para_break > start:
+                    end = para_break
+                else:
+                    # Look for sentence break
+                    sentence_break = text.rfind('. ', start + chunk_size - overlap, end)
+                    if sentence_break > start:
+                        end = sentence_break + 1
+
+            chunks.append(text[start:end].strip())
+            start = end - overlap  # Overlap for context continuity
+
+            # Prevent infinite loop
+            if start >= len(text) - overlap:
+                break
+
+        logger.info("llm.text_chunked", total_length=len(text), num_chunks=len(chunks))
+        return chunks
+
+    def _merge_metadata(self, metadata_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Merge multiple metadata dicts into one comprehensive result."""
+        if not metadata_list:
+            return {}
+        if len(metadata_list) == 1:
+            return metadata_list[0]
+
+        # Try LLM-based merging for better results
+        try:
+            metadata_json = json.dumps(metadata_list, indent=2)
+            prompt = CHUNK_MERGE_PROMPT.format(metadata_list=metadata_json)
+            response_text = self._generate(prompt)
+            merged = self._parse_json(response_text)
+            if merged:
+                return merged
+        except Exception as exc:
+            logger.info("llm.merge_failed", error=str(exc))
+
+        # Fallback: manual merging
+        return self._manual_merge(metadata_list)
+
+    def _manual_merge(self, metadata_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Manually merge metadata when LLM merging fails."""
+        merged: Dict[str, Any] = {}
+
+        for metadata in metadata_list:
+            for key, value in metadata.items():
+                if value is None:
+                    continue
+
+                existing = merged.get(key)
+
+                if existing is None:
+                    merged[key] = value
+                elif isinstance(value, list) and isinstance(existing, list):
+                    # Merge and deduplicate arrays
+                    combined = existing + [v for v in value if v not in existing]
+                    merged[key] = combined
+                elif isinstance(value, str) and isinstance(existing, str):
+                    # Keep longer/more detailed string
+                    if len(value) > len(existing):
+                        merged[key] = value
+                elif isinstance(value, bool):
+                    # If any is True, result is True
+                    merged[key] = existing or value
+                elif isinstance(value, (int, float)) and existing is None:
+                    merged[key] = value
+
+        return merged
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=8))
     def extract_tender(self, text: str) -> Dict[str, Any]:
-        prompt = TENDER_PROMPT.format(content=text[: settings.LLM_INPUT_MAX_CHARS])
-        response_text = self._generate(prompt)
-        return self._parse_json(response_text)
+        """Extract tender metadata from full document text."""
+        max_chars = self._get_max_chars()
+
+        # If text fits within limit, process directly
+        if len(text) <= max_chars:
+            prompt = TENDER_PROMPT.format(content=text)
+            response_text = self._generate(prompt)
+            return self._parse_json(response_text)
+
+        # For very large documents, use chunking
+        chunks = self._split_into_chunks(text)
+        metadata_list = []
+
+        for i, chunk in enumerate(chunks):
+            logger.info("llm.processing_chunk", chunk_num=i+1, total_chunks=len(chunks))
+            prompt = TENDER_PROMPT.format(content=chunk)
+            response_text = self._generate(prompt)
+            metadata = self._parse_json(response_text)
+            if metadata:
+                metadata_list.append(metadata)
+
+        return self._merge_metadata(metadata_list)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=8))
     def extract_company(self, text: str) -> Dict[str, Any]:
-        prompt = COMPANY_PROMPT.format(content=text[: settings.LLM_INPUT_MAX_CHARS])
-        response_text = self._generate(prompt)
-        return self._parse_json(response_text)
+        """Extract company metadata from full document text."""
+        max_chars = self._get_max_chars()
+
+        # If text fits within limit, process directly
+        if len(text) <= max_chars:
+            prompt = COMPANY_PROMPT.format(content=text)
+            response_text = self._generate(prompt)
+            return self._parse_json(response_text)
+
+        # For very large documents, use chunking
+        chunks = self._split_into_chunks(text)
+        metadata_list = []
+
+        for i, chunk in enumerate(chunks):
+            logger.info("llm.processing_chunk", chunk_num=i+1, total_chunks=len(chunks))
+            prompt = COMPANY_PROMPT.format(content=chunk)
+            response_text = self._generate(prompt)
+            metadata = self._parse_json(response_text)
+            if metadata:
+                metadata_list.append(metadata)
+
+        return self._merge_metadata(metadata_list)
 
     def _generate(self, prompt: str) -> str:
         if self.provider == "gemini":

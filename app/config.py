@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "gpt-oss:latest"
     LLM_TIMEOUT_SECONDS: int = 60
     LLM_INPUT_MAX_CHARS: int = 12000
+    LLM_GEMINI_MAX_CHARS: int = 500000  # Gemini supports large context
+    LLM_CHUNK_SIZE: int = 30000  # Chunk size for very large docs
+    LLM_CHUNK_OVERLAP: int = 1000  # Overlap between chunks
     GEMINI_MODEL: str = "gemini-1.5-flash"
 
     # Embedding
