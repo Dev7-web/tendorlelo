@@ -83,6 +83,14 @@ async def run_scrape_job() -> None:
             {"job_id": job_id, "job_type": "scrape", "status": "completed", "stats": stats},
         )
     except Exception as exc:
+        import traceback
+        error_msg = str(exc) or repr(exc) or type(exc).__name__
+        error_detail = {
+            "error": error_msg,
+            "type": type(exc).__name__,
+            "traceback": traceback.format_exc(),
+            "timestamp": datetime.now(timezone.utc),
+        }
         await scrape_logs.update_one(
             {"job_id": job_id},
             {
@@ -90,15 +98,15 @@ async def run_scrape_job() -> None:
                     "completed_at": datetime.now(timezone.utc),
                     "status": "failed",
                     "stats": stats,
-                    "errors": errors + [{"error": str(exc), "timestamp": datetime.now(timezone.utc)}],
+                    "errors": errors + [error_detail],
                 }
             },
         )
         await _broadcast(
             "job_failed",
-            {"job_id": job_id, "job_type": "scrape", "status": "failed", "error": str(exc)},
+            {"job_id": job_id, "job_type": "scrape", "status": "failed", "error": error_msg},
         )
-        logger.info("scrape.job_failed", error=str(exc))
+        logger.error("scrape.job_failed", error=error_msg, error_type=type(exc).__name__, exc_info=True)
 
 
 def run_scrape_job_sync() -> None:
